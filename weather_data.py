@@ -39,11 +39,11 @@ def generate_weather_data(start_date, end_date, freq='h', lat=None):
     seasonal_amplitude = 10
     daily_amplitude = 5
 
-    day_of_year = df.index.dayofyear
+    day_of_year = df.index.dayofyear # type: ignore
     phase_shift = -80 if lat is None or lat >= 0 else 100
     seasonal_variation = seasonal_amplitude * np.sin(2 * np.pi * (day_of_year + phase_shift) / 365.25)
 
-    hour_of_day = df.index.hour
+    hour_of_day = df.index.hour # type: ignore
     _daily_variation_calc = daily_amplitude * np.sin(2 * np.pi * (hour_of_day - 6) / 24) # Peak around 2 PM
     daily_variation = np.array(_daily_variation_calc) # Ensure numpy array
 
