@@ -154,7 +154,7 @@ def get_weather(sim_time_hours, weather_df):
     return weather_df.loc[closest_timestamp]
 
 # --- Simulation Parameters (Example Values) ---
-SIM_DURATION_HOURS = 24 * 30 * 3 # Simulate for 30 days
+SIM_DURATION_HOURS = 24 * 30 * 3 # Hours * Days * Months
 AVG_ARRIVAL_RATE_PER_HOUR = 0.75 # 0.5: Average 1 vessel every 2 hours
 NUM_BERTHS = 5
 CHECK_INTERVAL_HOURS = 1 # How often to re-check weather/resources if waiting
@@ -337,13 +337,14 @@ if event_log:
     print(operations_df.head())
     print("\nOperations Log Description:")
     print(operations_df.describe())
+
+
+    operations_df.to_csv("synthetic_operations_log.csv", index=False)
+    # For larger data, consider Parquet:
+    # operations_df.to_parquet("synthetic_operations_log.parquet", index=False)
 else:
     print("\nNo vessel events were logged.")
 
 # --- Saving Data (Task 2.5 related) ---
 weather_df.to_csv("synthetic_weather_data.csv")
-if event_log:
-    operations_df.to_csv("synthetic_operations_log.csv", index=False)
-    # For larger data, consider Parquet:
-    # operations_df.to_parquet("synthetic_operations_log.parquet", index=False)
-print("\nDataFrames created. Uncomment saving lines to save to CSV/Parquet.")
+    
