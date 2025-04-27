@@ -2,3 +2,4 @@
 *.json
 *.joblib
 *.png
+__pycache__
