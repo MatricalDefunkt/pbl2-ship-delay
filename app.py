@@ -423,26 +423,51 @@ def predict():
                 if fitted_static_preprocessor_rnn_cnn is None or fitted_sequence_scaler is None:
                      return jsonify({"error": f"Internal error: Preprocessors/scaler for {model_name} not loaded."}), 500
 
-                # 1. Prepare Static Features Input
+                # --- Calculate Weather Summary Features (Needed for the Static Preprocessor) ---
+                # This is the same calculation used for sklearn models and MLP
+                weather_features = calculate_weather_features_from_forecast(arrival_ts, hourly_forecast)
+                if weather_features.empty or weather_features.isnull().all():
+                    return jsonify({"error": f"Could not calculate weather summary features for {model_name}."}), 400
+
+                # 1. Prepare Static Features Input DataFrame
                 static_input_data = {
                     "type": [vessel_type], "teu": [teu], "arrival_hour": [arrival_hour],
                     "arrival_dayofweek": [arrival_dayofweek], "arrival_month": [arrival_month],
                 }
-                for feature in PORT_OPERATIONAL_FEATURES: # Only TEU + Port State needed here usually
-                     if feature in STATIC_NUMERICAL_FEATURES_RNN_CNN: # Check if needed
-                        default_value = port_operational_defaults_by_hour.get(arrival_hour, DEFAULT_PORT_OPERATIONAL_VALUES).get(feature, 0.0)
-                        static_input_data[feature] = [float(data.get(feature, default_value))]
+                # Add port defaults
+                for feature in PORT_OPERATIONAL_FEATURES:
+                    default_value = port_operational_defaults_by_hour.get(arrival_hour, DEFAULT_PORT_OPERATIONAL_VALUES).get(feature, 0.0)
+                    static_input_data[feature] = [float(data.get(feature, default_value))]
+
+                # --- *** ADD WEATHER SUMMARY FEATURES TO STATIC INPUT DATA *** ---
+                for feature_name in WEATHER_FEATURE_NAMES:
+                    static_input_data[feature_name] = [weather_features.get(feature_name, 0.0)] # Use get with default 0
+                # --- *** END OF ADDITION *** ---
+
+
+                # Define the complete list of columns the static preprocessor expects
+                # This should match exactly how it was trained
+                all_expected_static_features = (
+                    STATIC_CATEGORICAL_FEATURES_RNN_CNN + STATIC_NUMERICAL_FEATURES_RNN_CNN + WEATHER_FEATURE_NAMES
+                 )
+                # Check if the definition during training was different - adjust if necessary
+                # For example, if only base numerical + categoricals were used for the static branch,
+                # then WEATHER_FEATURE_NAMES should NOT be added here, and the preprocessor
+                # loaded should also reflect that structure.
+                # HOWEVER, the error message implies the preprocessor DOES expect them.
 
                 try:
-                    static_df = pd.DataFrame(static_input_data, columns=ALL_STATIC_FEATURES_RNN_CNN)
+                    # Create DataFrame with all expected columns
+                    static_df = pd.DataFrame(static_input_data, columns=all_expected_static_features)
                     # Ensure dtypes
-                    static_df[STATIC_NUMERICAL_FEATURES_RNN_CNN] = static_df[STATIC_NUMERICAL_FEATURES_RNN_CNN].astype(float)
+                    num_features_for_static_df = STATIC_NUMERICAL_FEATURES_RNN_CNN + WEATHER_FEATURE_NAMES
+                    static_df[num_features_for_static_df] = static_df[num_features_for_static_df].astype(float)
                     static_df[STATIC_CATEGORICAL_FEATURES_RNN_CNN] = static_df[STATIC_CATEGORICAL_FEATURES_RNN_CNN].astype(str)
 
                 except KeyError as e:
                      return jsonify({"error": f"Internal error: Missing static feature column for {model_name}: {e}"}), 500
 
-                # Preprocess static features
+                # Preprocess static features using the *correct* preprocessor
                 static_input_processed = fitted_static_preprocessor_rnn_cnn.transform(static_df)
                 if hasattr(static_input_processed, "toarray"): static_input_processed = static_input_processed.toarray()
                 static_input_processed = static_input_processed.astype(np.float32)
@@ -457,7 +482,7 @@ def predict():
 
                     # Extract sequence data
                     forecast_start_time = arrival_ts.floor('h') # Align with training prep
-                    forecast_end_time = forecast_start_time + pd.Timedelta(hours=SEQUENCE_LENGTH - 1)
+                    forecast_end_time = forecast_start_time + pd.Timedelta(hours=SEQUENCE_LENGTH)
 
                     # Select relevant columns and time range
                     seq_data = forecast_df.loc[forecast_start_time : forecast_end_time, WEATHER_SEQUENCE_VARS]
