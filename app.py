@@ -7,6 +7,10 @@ import numpy as np
 import os
 import time
 from datetime import datetime
+import requests  # For making API calls to Open-Meteo
+import json  # For handling JSON responses
+from typing import Dict, List, Union, Optional, Any  # Type hints
+from weather_cache import weather_cache  # Import our weather cache
 
 # --- TensorFlow / Keras Imports ---
 # Import specific layers if needed for custom objects, otherwise load_model is usually sufficient
@@ -64,6 +68,70 @@ for w in _temp_windows:
         WEATHER_FEATURE_NAMES.append(f"{state}_hours_{w}h")
 EXPECTED_NUMERICAL_FEATURES = EXPECTED_NUMERICAL_FEATURES_BASE + WEATHER_FEATURE_NAMES
 # --- End of Configuration ---
+
+# --- Weather Code Dictionary ---
+WEATHER_CODE_DESCRIPTION = {
+    0: "Clear sky",
+    1: "Mainly clear",
+    2: "Partly cloudy",
+    3: "Overcast",
+    45: "Fog",
+    48: "Depositing rime fog",
+    51: "Light drizzle",
+    53: "Moderate drizzle",
+    55: "Heavy drizzle",
+    56: "Light freezing drizzle",
+    57: "Dense freezing drizzle",
+    61: "Slight rain",
+    63: "Moderate rain",
+    65: "Heavy rain",
+    66: "Light freezing rain",
+    67: "Heavy freezing rain",
+    71: "Slight snow fall",
+    73: "Moderate snow fall",
+    75: "Heavy snow fall",
+    77: "Snow grains",
+    80: "Slight rain showers",
+    81: "Moderate rain showers",
+    82: "Violent rain showers",
+    85: "Slight snow showers",
+    86: "Heavy snow showers",
+    95: "Thunderstorm",
+    96: "Thunderstorm with slight hail",
+    99: "Thunderstorm with heavy hail",
+}
+
+# Simplified weather codes for layman terms
+WEATHER_CODE_SIMPLE = {
+    0: "clear",
+    1: "clear",
+    2: "partly cloudy",
+    3: "cloudy",
+    45: "foggy",
+    48: "foggy",
+    51: "light rain",
+    53: "light rain",
+    55: "rain",
+    56: "freezing rain",
+    57: "freezing rain",
+    61: "light rain",
+    63: "rain",
+    65: "heavy rain",
+    66: "freezing rain",
+    67: "freezing rain",
+    71: "light snow",
+    73: "snow",
+    75: "heavy snow",
+    77: "snow",
+    80: "rain showers",
+    81: "rain showers",
+    82: "heavy rain showers",
+    85: "snow showers",
+    86: "snow showers",
+    95: "thunderstorm",
+    96: "thunderstorm with hail",
+    99: "thunderstorm with hail",
+}
 
 # --- Sequence Model Specific Configuration ---
 # Must match training!
@@ -339,7 +407,14 @@ def predict():
         # === A) Scikit-learn Pipeline Models ===
         if is_sklearn_model:
             if model_name.upper() in ["ARIMA", "SARIMA"]: # Handle ARIMA separately if needed
-                 return jsonify({"error": "ARIMA/SARIMA prediction not implemented via this endpoint yet."}), 400 # Or call your ARIMA logic
+                return (
+                    jsonify(
+                        {
+                            "error": "ARIMA/SARIMA prediction not implemented via this endpoint yet."
+                        }
+                    ),
+                    400,
+                )  # Or call your ARIMA logic
 
             print(f"Preparing input for sklearn model: {model_name}")
             selected_pipeline = models[model_name]
@@ -383,7 +458,14 @@ def predict():
             # --- MLP Input Prep ---
             if model_name == "MLP": # Check model name convention
                 if fitted_preprocessor is None:
-                     return jsonify({"error": "Internal error: Main preprocessor not loaded for MLP."}), 500
+                    return (
+                        jsonify(
+                            {
+                                "error": "Internal error: Main preprocessor not loaded for MLP."
+                            }
+                        ),
+                        500,
+                    )
 
                 # Calculate weather summary features (same as sklearn)
                 weather_features = calculate_weather_features_from_forecast(arrival_ts, hourly_forecast)
@@ -421,7 +503,14 @@ def predict():
             # --- RNN / CNN Input Prep ---
             elif model_name in ["RNN LSTM", "CNN 1D"]: # Adjust names if needed
                 if fitted_static_preprocessor_rnn_cnn is None or fitted_sequence_scaler is None:
-                     return jsonify({"error": f"Internal error: Preprocessors/scaler for {model_name} not loaded."}), 500
+                    return (
+                        jsonify(
+                            {
+                                "error": f"Internal error: Preprocessors/scaler for {model_name} not loaded."
+                            }
+                        ),
+                        500,
+                    )
 
                 # --- Calculate Weather Summary Features (Needed for the Static Preprocessor) ---
                 # This is the same calculation used for sklearn models and MLP
@@ -444,7 +533,6 @@ def predict():
                     static_input_data[feature_name] = [weather_features.get(feature_name, 0.0)] # Use get with default 0
                 # --- *** END OF ADDITION *** ---
 
-
                 # Define the complete list of columns the static preprocessor expects
                 # This should match exactly how it was trained
                 all_expected_static_features = (
@@ -465,7 +553,14 @@ def predict():
                     static_df[STATIC_CATEGORICAL_FEATURES_RNN_CNN] = static_df[STATIC_CATEGORICAL_FEATURES_RNN_CNN].astype(str)
 
                 except KeyError as e:
-                     return jsonify({"error": f"Internal error: Missing static feature column for {model_name}: {e}"}), 500
+                    return (
+                        jsonify(
+                            {
+                                "error": f"Internal error: Missing static feature column for {model_name}: {e}"
+                            }
+                        ),
+                        500,
+                    )
 
                 # Preprocess static features using the *correct* preprocessor
                 static_input_processed = fitted_static_preprocessor_rnn_cnn.transform(static_df)
@@ -510,12 +605,26 @@ def predict():
 
             else:
                 # Should not happen if initial check is correct
-                 return jsonify({"error": f"Internal error: Unknown Keras model type '{model_name}'."}), 500
+                return (
+                    jsonify(
+                        {
+                            "error": f"Internal error: Unknown Keras model type '{model_name}'."
+                        }
+                    ),
+                    500,
+                )
 
         # --- 4. Post-process Prediction ---
         if prediction_raw is None:
-             # Handle cases where prediction didn't happen (e.g., ARIMA error above)
-             return jsonify({"error": "Prediction could not be generated for the selected model."}), 500
+            # Handle cases where prediction didn't happen (e.g., ARIMA error above)
+            return (
+                jsonify(
+                    {
+                        "error": "Prediction could not be generated for the selected model."
+                    }
+                ),
+                500,
+            )
 
         predicted_delay = max(0, float(prediction_raw.flatten()[0])) # Flatten Keras output, extract, ensure >= 0
 
@@ -540,6 +649,260 @@ def predict():
     }
 
     return jsonify(response), 200
+
+
+@app.route("/weather", methods=["GET"])
+def get_weather():
+    """
+    Endpoint to fetch weather data from Open-Meteo API with caching.
+
+    Query parameters:
+    - lat: latitude (required)
+    - lon: longitude (required)
+    - forecast: Whether to return a forecast (default: 'true') or current weather ('false')
+
+    Returns weather data including temperature, humidity, precipitation,
+    weather code (in layman terms), wind speed, wind direction, visibility, and wave height.
+    """
+    # Get parameters
+    lat = request.args.get("lat")
+    lon = request.args.get("lon")
+    forecast_param = request.args.get("forecast", "true").lower()
+
+    # Cache status for debugging/monitoring
+    cache_status = "miss"
+
+    # Validate required parameters
+    if not lat or not lon:
+        return (
+            jsonify(
+                {"error": "Missing required parameters: lat and lon must be provided"}
+            ),
+            400,
+        )
+
+    try:
+        # Convert to float to validate
+        lat = float(lat)
+        lon = float(lon)
+
+        # Check coordinate ranges
+        if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+            return (
+                jsonify(
+                    {
+                        "error": "Invalid coordinates: latitude must be between -90 and 90, longitude between -180 and 180"
+                    }
+                ),
+                400,
+            )
+    except ValueError as e:
+        print(f"ValueError: {e}")
+        return (
+            jsonify(
+                {"error": "Invalid coordinates: lat and lon must be numeric values"}
+            ),
+            400,
+        )
+
+    # Determine if we want forecast or current weather
+    is_forecast = forecast_param in ("true", "t", "yes", "y", "1")
+
+    # Try to get data from cache first
+    if is_forecast:
+        cached_data = weather_cache.get_forecast_weather(lat, lon)
+        if cached_data:
+            # Add cache status to response
+            cached_data["cache_status"] = "hit_forecast"
+            return jsonify(cached_data), 200
+    else:
+        cached_data = weather_cache.get_current_weather(lat, lon)
+        if cached_data:
+            # Add cache status to response
+            cached_data["cache_status"] = "hit_current"
+            return jsonify(cached_data), 200
+
+    # Cache miss, need to fetch from API
+    # Build API request
+    base_url = "https://api.open-meteo.com/v1/forecast"
+
+    # Common parameters for both current and forecast
+    weather_params = {
+        "latitude": lat,
+        "longitude": lon,
+        "temperature_unit": "celsius",
+        "windspeed_unit": "kn",  # Knots to match the existing app logic
+        "timezone": "GMT",
+    }
+
+    # Add appropriate parameters based on request type
+    if is_forecast:
+        # For forecast data (48 hours)
+        weather_params.update(
+            {
+                "forecast_days": 2,  # 48 hours
+                "hourly": [
+                    "temperature_2m",
+                    "relative_humidity_2m",
+                    "precipitation",
+                    "weather_code",
+                    "wind_speed_10m",
+                    "wind_direction_10m",
+                    "visibility",
+                ],
+            }
+        )
+    else:
+        # For current weather data
+        weather_params.update(
+            {
+                "current": [
+                    "temperature_2m",
+                    "relative_humidity_2m",
+                    "precipitation",
+                    "weather_code",
+                    "wind_speed_10m",
+                    "wind_direction_10m",
+                    "visibility",
+                ]
+            }
+        )
+
+    # Get weather data from Open-Meteo
+    try:
+        response = requests.get(base_url, params=weather_params)
+        response.raise_for_status()  # Raise exception for HTTP errors
+        weather_data = response.json()
+
+        # Now get marine data for wave height
+        marine_url = "https://marine-api.open-meteo.com/v1/marine"
+        marine_params = {
+            "latitude": lat,
+            "longitude": lon,
+            "timezone": "GMT",
+        }
+
+        if is_forecast:
+            marine_params.update(
+                {"forecast_days": 2, "hourly": ["wave_height"]}  # 48 hours
+            )
+        else:
+            marine_params.update({"current": ["wave_height"]})
+
+        marine_response = requests.get(marine_url, params=marine_params)
+        marine_response.raise_for_status()
+        marine_data = marine_response.json()
+
+        # Process and combine the data
+        result = {
+            "coordinates": {"latitude": lat, "longitude": lon},
+            "units": {
+                "temperature": "°C",
+                "humidity": "%",
+                "precipitation": "mm",
+                "wind_speed": "knots",
+                "wind_direction": "degrees",
+                "visibility": "meters",
+                "wave_height": "meters",
+            },
+            "cache_status": "miss",  # Indicate this was a cache miss
+        }
+
+        if is_forecast:
+            # Process forecast data
+            hourly_data = []
+
+            for i in range(len(weather_data.get("hourly", {}).get("time", []))):
+                time_entry = weather_data["hourly"]["time"][i]
+                weather_code_val = weather_data["hourly"]["weather_code"][i]
+
+                # Create entry for this hour
+                hour_entry = {
+                    "timestamp": time_entry,
+                    "temperature": weather_data["hourly"]["temperature_2m"][i],
+                    "humidity": weather_data["hourly"]["relative_humidity_2m"][i],
+                    "precipitation": weather_data["hourly"]["precipitation"][i],
+                    "weather_code": weather_code_val,
+                    "weather_description": WEATHER_CODE_DESCRIPTION.get(
+                        weather_code_val, "Unknown"
+                    ),
+                    "weather_simple": WEATHER_CODE_SIMPLE.get(
+                        weather_code_val, "unknown"
+                    ),
+                    "wind_speed": weather_data["hourly"]["wind_speed_10m"][i],
+                    "wind_direction": weather_data["hourly"]["wind_direction_10m"][i],
+                    "visibility": weather_data["hourly"]["visibility"][i],
+                    "wave_height": (
+                        marine_data.get("hourly", {}).get("wave_height", [])[i]
+                        if i < len(marine_data.get("hourly", {}).get("wave_height", []))
+                        else None
+                    ),
+                }
+                hourly_data.append(hour_entry)
+
+            result["forecast"] = hourly_data
+            result["forecast_hours"] = len(hourly_data)
+
+            # Store in cache
+            weather_cache.cache_forecast_weather(lat, lon, result)
+        else:
+            # Process current weather data
+            weather_code_val = weather_data["current"]["weather_code"]
+
+            result["current"] = {
+                "timestamp": weather_data["current"]["time"],
+                "temperature": weather_data["current"]["temperature_2m"],
+                "humidity": weather_data["current"]["relative_humidity_2m"],
+                "precipitation": weather_data["current"]["precipitation"],
+                "weather_code": weather_code_val,
+                "weather_description": WEATHER_CODE_DESCRIPTION.get(
+                    weather_code_val, "Unknown"
+                ),
+                "weather_simple": WEATHER_CODE_SIMPLE.get(weather_code_val, "unknown"),
+                "wind_speed": weather_data["current"]["wind_speed_10m"],
+                "wind_direction": weather_data["current"]["wind_direction_10m"],
+                "visibility": weather_data["current"]["visibility"],
+                "wave_height": marine_data.get("current", {}).get("wave_height"),
+            }
+
+            # Store in cache
+            weather_cache.cache_current_weather(lat, lon, result)
+
+        return jsonify(result), 200
+
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": f"Error fetching weather data: {str(e)}"}), 500
+    except KeyError as e:
+        return (
+            jsonify({"error": f"Error processing weather data: Missing key {str(e)}"}),
+            500,
+        )
+    except Exception as e:
+        return jsonify({"error": f"An unexpected error occurred: {str(e)}"}), 500
+
+
+@app.route("/weather/cache/stats", methods=["GET"])
+def get_weather_cache_stats():
+    """
+    Endpoint to get statistics about the weather cache.
+    Useful for monitoring cache performance and diagnosing issues.
+    """
+    stats = weather_cache.get_stats()
+    return (
+        jsonify(
+            {
+                "cache_stats": stats,
+                "config": {
+                    "current_weather_ttl_seconds": weather_cache.CURRENT_WEATHER_TTL,
+                    "forecast_weather_ttl_seconds": weather_cache.FORECAST_WEATHER_TTL,
+                    "coordinate_precision": weather_cache.COORD_PRECISION,
+                    "cleanup_interval_seconds": weather_cache.CLEANUP_INTERVAL,
+                },
+            }
+        ),
+        200,
+    )
+
 
 # --- Run the App ---
 if __name__ == "__main__":
