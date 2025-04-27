@@ -6,7 +6,7 @@ import numpy as np
 import datetime
 import simpy
 
-def generate_weather_data(start_date_str, end_date_str, freq='H'):
+def generate_weather_data(start_date_str, end_date_str, freq='h'):
     """
     Generates synthetic hourly weather data for a port using a Markov chain
     for weather states and conditional distributions.
@@ -154,7 +154,7 @@ def get_weather(sim_time_hours, weather_df):
     return weather_df.loc[closest_timestamp]
 
 # --- Simulation Parameters (Example Values) ---
-SIM_DURATION_HOURS = 24 * 30 * 3 # Hours * Days * Months
+SIM_DURATION_HOURS = 24 * 30 * 12 # Hours * Days * Months
 AVG_ARRIVAL_RATE_PER_HOUR = 0.75 # 0.5: Average 1 vessel every 2 hours
 NUM_BERTHS = 5
 CHECK_INTERVAL_HOURS = 1 # How often to re-check weather/resources if waiting
@@ -302,7 +302,7 @@ def arrival_generator(env, resources, weather_df):
 print("Starting Port Simulation...")
 
 # 1. Generate Weather Data First
-weather_df = generate_weather_data('2023-01-01', '2023-03-31') # Generate for longer than sim duration if needed
+weather_df = generate_weather_data('2023-01-01', '2024-01-31') # Generate for longer than sim duration if needed
 print("Weather data generated.")
 print(weather_df.head())
 print(weather_df.describe())
@@ -347,4 +347,3 @@ else:
 
 # --- Saving Data (Task 2.5 related) ---
 weather_df.to_csv("synthetic_weather_data.csv")
-    
