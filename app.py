@@ -835,7 +835,7 @@ def get_weather():
                     "wave_height": (
                         marine_data.get("hourly", {}).get("wave_height", [])[i]
                         if i < len(marine_data.get("hourly", {}).get("wave_height", []))
-                        else None
+                        else 0.0
                     ),
                 }
                 hourly_data.append(hour_entry)
@@ -862,7 +862,7 @@ def get_weather():
                 "wind_speed": weather_data["current"]["wind_speed_10m"],
                 "wind_direction": weather_data["current"]["wind_direction_10m"],
                 "visibility": weather_data["current"]["visibility"],
-                "wave_height": marine_data.get("current", {}).get("wave_height"),
+                "wave_height": marine_data.get("current", {}).get("wave_height", 0.0),
             }
 
             # Store in cache
