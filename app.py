@@ -740,7 +740,7 @@ def get_weather():
         # For forecast data (48 hours)
         weather_params.update(
             {
-                "forecast_days": 2,  # 48 hours
+                "forecast_days": 3,  # 48 hours
                 "hourly": [
                     "temperature_2m",
                     "relative_humidity_2m",
@@ -784,7 +784,7 @@ def get_weather():
 
         if is_forecast:
             marine_params.update(
-                {"forecast_days": 2, "hourly": ["wave_height"]}  # 48 hours
+                {"forecast_days": 3, "hourly": ["wave_height"]}  # 48 hours
             )
         else:
             marine_params.update({"current": ["wave_height"]})
