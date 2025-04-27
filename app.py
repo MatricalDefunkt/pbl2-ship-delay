@@ -8,7 +8,13 @@ import os
 import time
 from datetime import datetime
 
+# --- TensorFlow / Keras Imports ---
+# Import specific layers if needed for custom objects, otherwise load_model is usually sufficient
+import tensorflow as tf
+from tensorflow import keras # type: ignore[import]
+
 # Import the helper functions
+# We might need a new helper for sequence prep or do it inline
 from utils import calculate_weather_features_from_forecast
 
 # Import the time series forecasting functionality
@@ -20,6 +26,7 @@ from time_series import (
 
 # --- Configuration ---
 MODEL_DIR = "models"
+KERAS_MODEL_DIR = "models_keras" # Separate directory for Keras models
 # !!! IMPORTANT: Define the exact feature names your models expect !!!
 # These must match the lists used during training (after preprocessing name generation for one-hot)
 # The preprocessor inside the pipeline handles the actual encoding/scaling
@@ -55,13 +62,22 @@ for w in _temp_windows:
             WEATHER_FEATURE_NAMES.append(f"{var}_{agg}_{w}h")
     for state in _temp_states:
         WEATHER_FEATURE_NAMES.append(f"{state}_hours_{w}h")
-
 EXPECTED_NUMERICAL_FEATURES = EXPECTED_NUMERICAL_FEATURES_BASE + WEATHER_FEATURE_NAMES
 # --- End of Configuration ---
 
-# --- Calculate Default Port Operational Values By Hour ---
-# Dictionary to store average values by hour of day for each port operational feature
+# --- Sequence Model Specific Configuration ---
+# Must match training!
+WEATHER_SEQUENCE_VARS = ['wind_speed_knots', 'visibility_nm', 'wave_height_m', 'precipitation_mmhr'] # As used in training
+SEQUENCE_LENGTH = 48 # As used in training
+
+# Combine static features expected by RNN/CNN (assuming they use the same static set)
+STATIC_NUMERICAL_FEATURES_RNN_CNN = EXPECTED_NUMERICAL_FEATURES_BASE # TEU + Port State
+STATIC_CATEGORICAL_FEATURES_RNN_CNN = EXPECTED_CATEGORICAL_FEATURES # Type + Time Features
+ALL_STATIC_FEATURES_RNN_CNN = STATIC_CATEGORICAL_FEATURES_RNN_CNN + STATIC_NUMERICAL_FEATURES_RNN_CNN
+
+# --- Load Port Operational Defaults ---
 port_operational_defaults_by_hour = {}
+DEFAULT_PORT_OPERATIONAL_VALUES = {}
 
 # Try to load the training data to calculate realistic defaults
 try:
@@ -134,31 +150,90 @@ DEFAULT_PORT_OPERATIONAL_VALUES = {
     "num_waiting_berth_at_pred_time": 2.0,  # 2 vessels waiting berth
 }
 
-# --- Load Models On Startup ---
+# --- Load Models & Preprocessors On Startup ---
 models = {}
-print("Loading models...")
+keras_models = {}
+fitted_preprocessor = None
+fitted_static_preprocessor_rnn_cnn = None
+fitted_sequence_scaler = None
+
+print("Loading models and preprocessors...")
+
+# Load scikit-learn pipelines
 try:
     for filename in os.listdir(MODEL_DIR):
         if filename.endswith(".joblib"):
-            model_name = (
-                filename.replace("_pipeline.joblib", "").replace("_", " ").title()
-            )
-            model_path = os.path.join(MODEL_DIR, filename)
-            print(f"Loading model: {model_name} from {model_path}")
-            # Ensure you handle potential exceptions during loading
-            try:
-                models[model_name] = joblib.load(model_path)
-                print(f"Loaded {model_name} successfully.")
-            except Exception as load_error:
-                print(
-                    f"Error loading model {model_name} from {model_path}: {load_error}"
-                )
-    if not models:
-        print("Warning: No models loaded. Check the 'models' directory.")
+            # --- Load Preprocessors ---
+            if filename == "main_preprocessor.joblib":
+                try:
+                    fitted_preprocessor = joblib.load(os.path.join(MODEL_DIR, filename))
+                    print("Loaded main_preprocessor.joblib successfully.")
+                except Exception as e:
+                    print(f"Error loading main_preprocessor.joblib: {e}")
+                continue # Don't add preprocessor to models dict
+
+            if filename == "static_preprocessor_rnn_cnn.joblib":
+                try:
+                    fitted_static_preprocessor_rnn_cnn = joblib.load(os.path.join(MODEL_DIR, filename))
+                    print("Loaded static_preprocessor_rnn_cnn.joblib successfully.")
+                except Exception as e:
+                    print(f"Error loading static_preprocessor_rnn_cnn.joblib: {e}")
+                continue
+
+            if filename == "sequence_scaler.joblib":
+                try:
+                    fitted_sequence_scaler = joblib.load(os.path.join(MODEL_DIR, filename))
+                    print("Loaded sequence_scaler.joblib successfully.")
+                except Exception as e:
+                    print(f"Error loading sequence_scaler.joblib: {e}")
+                continue
+
+            # --- Load sklearn Models ---
+            if filename.endswith("_pipeline.joblib"): # Only load pipelines
+                model_name = filename.replace("_pipeline.joblib", "").replace("_", " ").title()
+                model_path = os.path.join(MODEL_DIR, filename)
+                print(f"Loading sklearn pipeline: {model_name} from {model_path}")
+                try:
+                    models[model_name] = joblib.load(model_path)
+                    print(f"Loaded {model_name} successfully.")
+                except Exception as load_error:
+                    print(f"Error loading sklearn pipeline {model_name} from {model_path}: {load_error}")
+
 except FileNotFoundError:
-    print(f"Error: Model directory '{MODEL_DIR}' not found.")
+    print(f"Warning: Model directory '{MODEL_DIR}' not found for sklearn models/preprocessors.")
 except Exception as e:
-    print(f"An unexpected error occurred during model loading: {e}")
+    print(f"An unexpected error occurred during sklearn model/preprocessor loading: {e}")
+
+# Load Keras models
+try:
+    if not os.path.exists(KERAS_MODEL_DIR):
+        print(f"Warning: Keras model directory '{KERAS_MODEL_DIR}' not found.")
+    else:
+        for filename in os.listdir(KERAS_MODEL_DIR):
+             if filename.endswith(".keras"): # Load models saved in the recommended Keras format
+                 model_name = filename.replace("_best.keras", "").replace("_", " ").upper() # Example naming convention
+                 model_path = os.path.join(KERAS_MODEL_DIR, filename)
+                 print(f"Loading Keras model: {model_name} from {model_path}")
+                 try:
+                     keras_models[model_name] = keras.models.load_model(model_path)
+                     print(f"Loaded {model_name} successfully.")
+                 except Exception as load_error:
+                     print(f"Error loading Keras model {model_name} from {model_path}: {load_error}")
+except Exception as e:
+    print(f"An unexpected error occurred during Keras model loading: {e}")
+
+
+# --- Check if essential components were loaded ---
+if not models and not keras_models:
+    print("CRITICAL WARNING: No models (sklearn or Keras) were loaded.")
+if fitted_preprocessor is None:
+    print("CRITICAL WARNING: Main preprocessor ('main_preprocessor.joblib') not loaded. MLP and potentially other models will fail.")
+if fitted_static_preprocessor_rnn_cnn is None or fitted_sequence_scaler is None:
+    print("CRITICAL WARNING: Preprocessors/scalers for RNN/CNN not loaded. These models will fail.")
+
+
+# --- Combine model dictionaries for endpoint listing ---
+all_available_models = list(models.keys()) + list(keras_models.keys())
 
 
 # --- Create Flask App ---
@@ -198,18 +273,16 @@ create_arima_endpoint(app, models)
 @app.route("/", methods=["GET"])
 def health_check():
     """Basic health check endpoint."""
-    available_models = list(models.keys())
     return (
         jsonify(
             {
                 "status": "OK",
                 "message": "Prediction server is running.",
-                "available_models": available_models,
+                "available_models": all_available_models,
             }
         ),
         200,
     )
-
 
 @app.route("/predict", methods=["POST"])
 def predict():
@@ -236,159 +309,206 @@ def predict():
         )
 
     model_name = data["model_name"]
-    if model_name not in models:
+    is_keras_model = model_name in keras_models
+    is_sklearn_model = model_name in models
+
+    if not is_keras_model and not is_sklearn_model:
         return (
-            jsonify(
-                {
-                    "error": f"Model '{model_name}' not found. Available models: {list(models.keys())}"
-                }
-            ),
+            jsonify({"error": f"Model '{model_name}' not found. Available: {all_available_models}"}),
             404,
         )
 
-    # --- 2. Feature Preparation ---
+    # --- 2. Feature Preparation (Common Part) ---
     try:
-        # Basic vessel and time features
         vessel_type = data["vessel_type"]
         teu = float(data["teu"])
         arrival_ts_str = data["arrival_timestamp_str"]
-        # Attempt to parse timestamp (handle potential errors)
         try:
-            # Try common ISO formats, add more as needed
             arrival_ts = pd.to_datetime(arrival_ts_str)
         except ValueError:
-            return (
-                jsonify(
-                    {
-                        "error": "Invalid format for 'arrival_timestamp_str'. Use ISO 8601 format (e.g., YYYY-MM-DDTHH:MM:SSZ)."
-                    }
-                ),
-                400,
-            )
+            return jsonify({"error": "Invalid format for 'arrival_timestamp_str'. Use ISO 8601."}), 400
 
         arrival_hour = arrival_ts.hour
         arrival_dayofweek = arrival_ts.dayofweek
         arrival_month = arrival_ts.month
+        hourly_forecast = data["hourly_weather_forecast"] # List of dicts
 
-        # Weather features (calculated by helper function)
-        hourly_forecast = data["hourly_weather_forecast"]  # List of dicts
-        weather_features = calculate_weather_features_from_forecast(
-            arrival_ts, hourly_forecast
-        )
+        # --- 3. Model-Specific Input Preparation & Prediction ---
+        prediction_raw = None
 
-        if weather_features.empty or weather_features.isnull().all():
-            return (
-                jsonify(
-                    {
-                        "error": "Could not calculate weather features from the provided forecast data. Check forecast format and coverage."
-                    }
-                ),
-                400,
-            )
+        # === A) Scikit-learn Pipeline Models ===
+        if is_sklearn_model:
+            if model_name.upper() in ["ARIMA", "SARIMA"]: # Handle ARIMA separately if needed
+                 return jsonify({"error": "ARIMA/SARIMA prediction not implemented via this endpoint yet."}), 400 # Or call your ARIMA logic
 
-        # --- 3. Assemble Input DataFrame for Model ---
-        # Create a dictionary matching the expected feature names
-        input_data = {
-            "type": [vessel_type],
-            "teu": [teu],
-            "arrival_hour": [arrival_hour],
-            "arrival_dayofweek": [arrival_dayofweek],
-            "arrival_month": [arrival_month],
-        }
+            print(f"Preparing input for sklearn model: {model_name}")
+            selected_pipeline = models[model_name]
 
-        # Add port operational features - use defaults if not provided
-        for feature in PORT_OPERATIONAL_FEATURES:
-            if feature in data:
-                # Use provided value if available
-                input_data[feature] = [float(data[feature])]
-            else:
-                # Get hour-specific default value
+            # Calculate weather summary features
+            weather_features = calculate_weather_features_from_forecast(arrival_ts, hourly_forecast)
+            if weather_features.empty or weather_features.isnull().all():
+                return jsonify({"error": "Could not calculate weather summary features."}), 400
+
+            # Assemble input dictionary
+            input_data = {
+                "type": [vessel_type], "teu": [teu], "arrival_hour": [arrival_hour],
+                "arrival_dayofweek": [arrival_dayofweek], "arrival_month": [arrival_month],
+            }
+            # Add port defaults
+            for feature in PORT_OPERATIONAL_FEATURES:
+                default_value = port_operational_defaults_by_hour.get(arrival_hour, DEFAULT_PORT_OPERATIONAL_VALUES).get(feature, 0.0) # Safer get
+                input_data[feature] = [float(data.get(feature, default_value))] # Use provided or default
+            # Add weather features
+            for feature_name in WEATHER_FEATURE_NAMES:
+                input_data[feature_name] = [weather_features.get(feature_name, 0.0)] # Use get with default 0
+
+            # Create DataFrame expected by the pipeline's preprocessor
+            all_expected_sklearn_features = EXPECTED_CATEGORICAL_FEATURES + EXPECTED_NUMERICAL_FEATURES
+            try:
+                input_df = pd.DataFrame(input_data, columns=all_expected_sklearn_features)
+                # Ensure dtypes (optional but good practice)
+                input_df[EXPECTED_NUMERICAL_FEATURES] = input_df[EXPECTED_NUMERICAL_FEATURES].astype(float)
+                input_df[EXPECTED_CATEGORICAL_FEATURES] = input_df[EXPECTED_CATEGORICAL_FEATURES].astype(str)
+            except KeyError as e:
+                return jsonify({"error": f"Internal error: Missing expected feature column for sklearn: {e}"}), 500
+
+            # Predict using the sklearn pipeline
+            prediction_raw = selected_pipeline.predict(input_df)
+
+        # === B) Keras Models ===
+        elif is_keras_model:
+            print(f"Preparing input for Keras model: {model_name}")
+            selected_keras_model = keras_models[model_name]
+
+            # --- MLP Input Prep ---
+            if model_name == "MLP": # Check model name convention
+                if fitted_preprocessor is None:
+                     return jsonify({"error": "Internal error: Main preprocessor not loaded for MLP."}), 500
+
+                # Calculate weather summary features (same as sklearn)
+                weather_features = calculate_weather_features_from_forecast(arrival_ts, hourly_forecast)
+                if weather_features.empty or weather_features.isnull().all():
+                    return jsonify({"error": "Could not calculate weather summary features for MLP."}), 400
+
+                # Assemble input dictionary (same as sklearn)
+                input_data = {
+                    "type": [vessel_type], "teu": [teu], "arrival_hour": [arrival_hour],
+                    "arrival_dayofweek": [arrival_dayofweek], "arrival_month": [arrival_month],
+                }
+                for feature in PORT_OPERATIONAL_FEATURES:
+                    default_value = port_operational_defaults_by_hour.get(arrival_hour, DEFAULT_PORT_OPERATIONAL_VALUES).get(feature, 0.0)
+                    input_data[feature] = [float(data.get(feature, default_value))]
+                for feature_name in WEATHER_FEATURE_NAMES:
+                    input_data[feature_name] = [weather_features.get(feature_name, 0.0)]
+
+                # Create DataFrame
+                all_expected_mlp_features = EXPECTED_CATEGORICAL_FEATURES + EXPECTED_NUMERICAL_FEATURES
                 try:
-                    default_value = port_operational_defaults_by_hour[arrival_hour][
-                        feature
-                    ]
-                    print(
-                        f"Using default value for {feature} at hour {arrival_hour}: {default_value}"
-                    )
-                except (KeyError, TypeError):
-                    # Fallback to general default if hour-specific not available
-                    default_value = DEFAULT_PORT_OPERATIONAL_VALUES[feature]
-                    print(f"Using general default value for {feature}: {default_value}")
+                    input_df = pd.DataFrame(input_data, columns=all_expected_mlp_features)
+                    input_df[EXPECTED_NUMERICAL_FEATURES] = input_df[EXPECTED_NUMERICAL_FEATURES].astype(float)
+                    input_df[EXPECTED_CATEGORICAL_FEATURES] = input_df[EXPECTED_CATEGORICAL_FEATURES].astype(str)
+                except KeyError as e:
+                    return jsonify({"error": f"Internal error: Missing expected feature column for MLP: {e}"}), 500
 
-                input_data[feature] = [default_value]
+                # Preprocess using the loaded preprocessor
+                input_processed = fitted_preprocessor.transform(input_df)
+                if hasattr(input_processed, "toarray"): input_processed = input_processed.toarray() # Densify
+                input_processed = input_processed.astype(np.float32) # Keras often prefers float32
 
-        # Add weather features dynamically
-        for feature_name in WEATHER_FEATURE_NAMES:
-            if feature_name in weather_features:
-                input_data[feature_name] = [weather_features[feature_name]]
+                # Predict using Keras model
+                prediction_raw = selected_keras_model.predict(input_processed)
+
+            # --- RNN / CNN Input Prep ---
+            elif model_name in ["RNN LSTM", "CNN 1D"]: # Adjust names if needed
+                if fitted_static_preprocessor_rnn_cnn is None or fitted_sequence_scaler is None:
+                     return jsonify({"error": f"Internal error: Preprocessors/scaler for {model_name} not loaded."}), 500
+
+                # 1. Prepare Static Features Input
+                static_input_data = {
+                    "type": [vessel_type], "teu": [teu], "arrival_hour": [arrival_hour],
+                    "arrival_dayofweek": [arrival_dayofweek], "arrival_month": [arrival_month],
+                }
+                for feature in PORT_OPERATIONAL_FEATURES: # Only TEU + Port State needed here usually
+                     if feature in STATIC_NUMERICAL_FEATURES_RNN_CNN: # Check if needed
+                        default_value = port_operational_defaults_by_hour.get(arrival_hour, DEFAULT_PORT_OPERATIONAL_VALUES).get(feature, 0.0)
+                        static_input_data[feature] = [float(data.get(feature, default_value))]
+
+                try:
+                    static_df = pd.DataFrame(static_input_data, columns=ALL_STATIC_FEATURES_RNN_CNN)
+                    # Ensure dtypes
+                    static_df[STATIC_NUMERICAL_FEATURES_RNN_CNN] = static_df[STATIC_NUMERICAL_FEATURES_RNN_CNN].astype(float)
+                    static_df[STATIC_CATEGORICAL_FEATURES_RNN_CNN] = static_df[STATIC_CATEGORICAL_FEATURES_RNN_CNN].astype(str)
+
+                except KeyError as e:
+                     return jsonify({"error": f"Internal error: Missing static feature column for {model_name}: {e}"}), 500
+
+                # Preprocess static features
+                static_input_processed = fitted_static_preprocessor_rnn_cnn.transform(static_df)
+                if hasattr(static_input_processed, "toarray"): static_input_processed = static_input_processed.toarray()
+                static_input_processed = static_input_processed.astype(np.float32)
+
+                # 2. Prepare Sequence Input
+                try:
+                    # Create DataFrame from forecast list
+                    forecast_df = pd.DataFrame(hourly_forecast)
+                    if "timestamp" not in forecast_df.columns: raise ValueError("'timestamp' missing")
+                    forecast_df["timestamp"] = pd.to_datetime(forecast_df["timestamp"])
+                    forecast_df = forecast_df.set_index("timestamp").sort_index()
+
+                    # Extract sequence data
+                    forecast_start_time = arrival_ts.floor('h') # Align with training prep
+                    forecast_end_time = forecast_start_time + pd.Timedelta(hours=SEQUENCE_LENGTH - 1)
+
+                    # Select relevant columns and time range
+                    seq_data = forecast_df.loc[forecast_start_time : forecast_end_time, WEATHER_SEQUENCE_VARS]
+
+                    if len(seq_data) < SEQUENCE_LENGTH:
+                        # Handle insufficient forecast data (e.g., padding or error)
+                        # For now, error out if not exact length
+                        return jsonify({"error": f"Insufficient hourly forecast data provided. Need {SEQUENCE_LENGTH} hours from {forecast_start_time}. Found {len(seq_data)}."}), 400
+
+                    sequence_input_raw = seq_data.values # Shape: (SEQUENCE_LENGTH, num_weather_vars)
+                    sequence_input_raw = sequence_input_raw.astype(np.float32)
+
+                    # Scale sequence data using loaded scaler
+                    # Reshape for scaler -> scale -> reshape back to 3D for model (add batch dim)
+                    sequence_input_scaled = fitted_sequence_scaler.transform(sequence_input_raw)
+                    sequence_input_final = sequence_input_scaled.reshape(1, SEQUENCE_LENGTH, len(WEATHER_SEQUENCE_VARS)) # Add batch dimension
+
+                except Exception as seq_e:
+                    print(f"Error preparing sequence input: {seq_e}")
+                    import traceback; traceback.print_exc()
+                    return jsonify({"error": f"Internal error processing weather sequence: {seq_e}"}), 500
+
+                # 3. Predict using RNN/CNN model (expects list/tuple of inputs)
+                prediction_raw = selected_keras_model.predict([sequence_input_final, static_input_processed])
+
             else:
-                # Handle missing weather features (e.g., a state never occurred in forecast) - fill with 0 or NaN? 0 is often safer.
-                print(
-                    f"Warning: Weather feature '{feature_name}' not generated by util function. Using 0."
-                )
-                input_data[feature_name] = [0.0]
+                # Should not happen if initial check is correct
+                 return jsonify({"error": f"Internal error: Unknown Keras model type '{model_name}'."}), 500
 
-        # Define the full expected feature list for the DataFrame
-        all_expected_features = (
-            EXPECTED_CATEGORICAL_FEATURES + EXPECTED_NUMERICAL_FEATURES
-        )
+        # --- 4. Post-process Prediction ---
+        if prediction_raw is None:
+             # Handle cases where prediction didn't happen (e.g., ARIMA error above)
+             return jsonify({"error": "Prediction could not be generated for the selected model."}), 500
 
-        # Create DataFrame with columns in the correct order expected by the preprocessor
-        try:
-            input_df = pd.DataFrame(input_data, columns=all_expected_features)
-            # Ensure correct dtypes where possible (though pipeline should handle)
-            input_df[EXPECTED_NUMERICAL_FEATURES] = input_df[
-                EXPECTED_NUMERICAL_FEATURES
-            ].astype(float)
-            input_df[EXPECTED_CATEGORICAL_FEATURES] = input_df[
-                EXPECTED_CATEGORICAL_FEATURES
-            ].astype(
-                str
-            )  # OneHotEncoder expects strings/objects
-        except KeyError as e:
-            return (
-                jsonify(
-                    {
-                        "error": f"Internal error: Missing expected feature column during DataFrame creation: {e}. Check feature definitions."
-                    }
-                ),
-                500,
-            )
-
-        # --- 4. Make Prediction ---
-        selected_pipeline = models[model_name]
-        prediction_raw = selected_pipeline.predict(input_df)
-
-        # Ensure prediction is a single value and non-negative
-        predicted_delay = max(
-            0, float(prediction_raw[0])
-        )  # Extract first element and ensure >= 0
+        predicted_delay = max(0, float(prediction_raw.flatten()[0])) # Flatten Keras output, extract, ensure >= 0
 
     except ValueError as ve:
-        # Catch specific errors like invalid float conversion
         return jsonify({"error": f"Invalid input data value: {ve}"}), 400
     except Exception as e:
-        # Catch-all for other unexpected errors during processing/prediction
-        print(f"An error occurred during prediction: {e}")
-        import traceback
-
-        traceback.print_exc()  # Log detailed error for debugging
-        return (
-            jsonify({"error": "An internal server error occurred during prediction."}),
-            500,
-        )
+        print(f"An error occurred during prediction processing: {e}")
+        import traceback; traceback.print_exc()
+        return jsonify({"error": "An internal server error occurred during prediction."}), 500
 
     # --- 5. Format Response ---
     end_time = time.time()
     response = {
         "model_used": model_name,
-        "input_data_summary": {  # Provide a summary, not the full raw forecast
-            "vessel_type": vessel_type,
-            "teu": teu,
+        "input_data_summary": {
+            "vessel_type": vessel_type, "teu": teu,
             "arrival_timestamp": arrival_ts.isoformat(),
-            "port_defaults_used": [
-                f for f in PORT_OPERATIONAL_FEATURES if f not in data
-            ],
+            "port_defaults_used": [f for f in PORT_OPERATIONAL_FEATURES if f not in data],
         },
         "predicted_total_weather_delay_hrs": round(predicted_delay, 4),
         "processing_time_seconds": round(end_time - start_time, 4),
@@ -396,9 +516,6 @@ def predict():
 
     return jsonify(response), 200
 
-
 # --- Run the App ---
 if __name__ == "__main__":
-    # Host='0.0.0.0' makes it accessible on your network, not just localhost
-    # Debug=True provides auto-reloading and more error details (DO NOT USE IN PRODUCTION)
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True) # Use debug=False for production
