@@ -9,16 +9,22 @@ Port Weather Navigator is a web application designed to provide insights into po
 *   **Delay Prediction:** Predict potential shipping delays based on weather forecasts and historical data.
 *   **Congestion Analytics:** Analyze historical and predicted port congestion levels.
 *   **Time Series Forecasting:** View time series forecasts for weather and shipping metrics.
-*   **Interactive Map:** Visualize port locations and relevant information on a map.
 
 ## Screenshots
+
+![Dashboard](https://github.com/user-attachments/assets/0883d939-5786-48e1-b093-13955a2963b5)
+![Predictions Dashboard](https://github.com/user-attachments/assets/de6ca823-d992-4032-af63-8afc22ecbae2)
+![Model List](https://github.com/user-attachments/assets/18590fa8-922e-4daa-8726-adb88ba35d32)
+![Using Another Port](https://github.com/user-attachments/assets/4bfb0c34-fe84-4efb-ac3e-fcb58a33573c)
+![Predictions Page Using Another Port](https://github.com/user-attachments/assets/5871842f-e2e3-44c5-95e5-4f57af6b0be7)
+
 
 ## Project Structure
 
 The project is divided into two main components:
 
-1.  **Frontend (`port-weather-navigator`):** A React-based single-page application built with Vite and TypeScript, providing the user interface.
-2.  **Backend (`pbl2-ship-delay`):** A Python-based server (likely Flask or FastAPI) that serves data, performs predictions, and exposes API endpoints consumed by the frontend.
+1.  **[Frontend](https://github.com/MatricalDefunkt/port-weather-navigator) (`port-weather-navigator`):** A React-based single-page application built with Vite and TypeScript, providing the user interface.
+2.  **[Backend](https://github.com/MatricalDefunkt/pbl2-ship-delay) (`pbl2-ship-delay`):** A Python-based server that serves data, performs predictions, and exposes API endpoints consumed by the frontend.
 
 ## Prerequisites
 
@@ -34,18 +40,17 @@ The project is divided into two main components:
 
 1.  **Clone the repository:**
     ```bash
-    git clone <your-repository-url>
-    cd <your-repository-name>
+    git clone https://github.com/MatricalDefunkt/port-weather-navigator
+    git clone https://github.com/MatricalDefunkt/pbl2-ship-delay
     ```
 
 2.  **Setup and run the Backend (`pbl2-ship-delay`):**
     ```bash
     cd pbl2-ship-delay
     pip install -r requirements.txt
-    # (Optional) Create and populate .env file if needed for API keys or configurations
-    python app.py # Or the main script that starts the backend server
+    python app.py
     ```
-    The backend server will typically start on a local port (e.g., `http://localhost:5000` or `http://localhost:8000`).
+    The backend server will typically start on a local port `http://localhost:5000`.
 
 3.  **Setup and run the Frontend (`port-weather-navigator`):**
     Open a new terminal window.
@@ -54,7 +59,7 @@ The project is divided into two main components:
     npm install # or yarn install / pnpm install
     npm run dev
     ```
-    The frontend development server will typically start on `http://localhost:5173` (or another port indicated by Vite) and will proxy API requests to the backend.
+    The frontend development server will typically start on `http://localhost:5173` and will proxy API requests to the backend.
 
 ## Technologies Used
 
@@ -70,7 +75,7 @@ The project is divided into two main components:
 
 ### Backend (`pbl2-ship-delay`):
 *   **Python:** Main programming language.
-*   **Flask / FastAPI (assumed):** Web framework for building APIs.
+*   **Flask:** Web framework for building APIs.
 *   **Pandas & NumPy:** For data manipulation and numerical operations.
 *   **Scikit-learn:** For machine learning tasks and preprocessing.
 *   **Keras / TensorFlow:** For deep learning models (e.g., RNN, CNN, MLP).
@@ -78,25 +83,29 @@ The project is divided into two main components:
 
 ## API Endpoints
 
-The frontend communicates with the backend via a set of API endpoints, likely prefixed with `/api` (as configured in the frontend). While the exact backend implementation details might vary, common endpoints based on the application's features would include:
+The frontend communicates with the backend via a set of API endpoints. The main Flask application (`app.py`) in the `pbl2-ship-delay` directory defines these routes.
 
-*   `GET /api/ports`: Fetches a list of available ports.
-*   `GET /api/weather/{port_id}?date={date}`: Fetches current and forecasted weather data for a specific port.
-*   `POST /api/predict/delay`: Submits data to get a delay prediction.
-*   `GET /api/predict/congestion/{port_id}`: Fetches congestion prediction for a specific port.
-*   `GET /api/historical/weather/{port_id}`: Fetches historical weather data.
-*   `GET /api/historical/shipping/{port_id}`: Fetches historical shipping data.
-*   `GET /api/alerts/{port_id}`: Fetches active alerts for a port.
-*   `GET /api/forecast/timeseries/{port_id}?metric={metric_name}`: Fetches time series forecast data for a specific metric.
-
-*(Note: These are representative endpoints. Refer to the backend API documentation or source code for the exact specifications.)*
-
-## Contributing
-
-Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
-
-Please make sure to update tests as appropriate.
-
-## License
-
-[MIT](https://choosealicense.com/licenses/mit/)
+*   `GET /`: Health check for the prediction server.
+    *   Returns: JSON with status, message, and list of available models.
+*   `POST /predict`: Endpoint to make delay predictions.
+    *   Expects: JSON payload with `vessel_type`, `teu`, `arrival_timestamp_str`, `hourly_weather_forecast`, and `model_name`.
+    *   Returns: JSON with prediction, model used, input summary, and processing time.
+*   `GET /weather`: Fetches weather data from Open-Meteo API (with caching).
+    *   Query Parameters: `lat` (latitude), `lon` (longitude), `forecast` (boolean, default true).
+    *   Returns: JSON with weather data (current or forecast).
+*   `GET /weather/cache/stats`: Retrieves statistics about the weather cache.
+    *   Returns: JSON with cache stats and configuration.
+*   `POST /forecast/arima/train`: Trains a new ARIMA model.
+    *   Expects: JSON payload with `time_series_data` (list of values), `order` (e.g., [1,1,1]), `train_test_split`.
+    *   Returns: JSON with training results (RMSE, MAE, etc.) or error.
+*   `POST /forecast/sarima/train`: Trains a new SARIMA (Seasonal ARIMA) model.
+    *   Expects: JSON payload with `time_series_data`, `order`, `seasonal_order` (e.g., [1,1,1,7]), `train_test_split`.
+    *   Returns: JSON with training results or error.
+*   `POST /forecast/arima/predict`: Makes predictions using a trained ARIMA model.
+    *   Expects: JSON payload with `steps` (number of future steps to predict).
+    *   Returns: JSON with forecasted values or error.
+*   `POST /forecast/sarima/predict`: Makes predictions using a trained SARIMA model.
+    *   Expects: JSON payload with `steps`.
+    *   Returns: JSON with forecasted values or error.
+*   `GET /forecast/arima/models`: Lists available (trained) ARIMA/SARIMA models.
+    *   Returns: JSON with a list of model names and their status.
